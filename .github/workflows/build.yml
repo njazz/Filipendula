@@ -1,0 +1,117 @@
+name: build
+
+# Runs once a day, and only builds if the code changed since the last successful build.
+# (No push/PR trigger on purpose. Use "Run workflow" to build on demand; tick "force" to ignore the change check.)
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Build even if nothing changed since the last successful build"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Did the code change?
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.decide.outputs.changed }}
+      key: ${{ steps.hash.outputs.key }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The key is a hash of everything that affects the build. A cache entry with that key exists
+      # only if a build of exactly this code finished successfully before.
+      - id: hash
+        run: echo "key=built-${{ hashFiles('Sources/**', 'Tests/**', 'Resources/**', 'scripts/**', 'Package.swift', 'Package.resolved', 'project.yml') }}" >> "$GITHUB_OUTPUT"
+
+      - id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci-built-marker
+          key: ${{ steps.hash.outputs.key }}
+          lookup-only: true
+
+      - id: decide
+        env:
+          HIT: ${{ steps.cache.outputs.cache-hit }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          if [ "$FORCE" = "true" ] || [ "$HIT" != "true" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Code changed (or forced): building." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No code changes since the last successful build: skipping." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  build:
+    name: Test and build (macOS)
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Version consistency
+        run: |
+          v="$(./scripts/version.sh)"
+          echo "Version.swift says $v"
+          grep -q "MARKETING_VERSION: $v" project.yml || { echo "project.yml MARKETING_VERSION does not match $v"; exit 1; }
+
+      - name: Test
+        run: swift test
+
+      - name: Build CLI
+        run: swift build -c release --product filipendula
+
+      - name: CLI smoke test (plan, apply, undo)
+        run: |
+          set -e
+          cli=.build/release/filipendula
+          d="$(mktemp -d)"
+          mkdir -p "$d/proj/src" "$d/in"
+          printf 'a\nb\n'    > "$d/proj/src/a.txt"
+          printf 'a\nb\nc\n' > "$d/in/a.txt"
+          printf 'new\n'     > "$d/in/brand-new.txt"
+          "$cli" --version
+          "$cli" plan  "$d/proj" "$d/in/a.txt" "$d/in/brand-new.txt" --no-color
+          "$cli" apply "$d/proj" "$d/in/a.txt" "$d/in/brand-new.txt" -y --no-color
+          grep -q c "$d/proj/src/a.txt"
+          test ! -e "$d/proj/brand-new.txt"        # not in the project: must not be added
+          "$cli" undo "$d/proj"
+          if grep -q c "$d/proj/src/a.txt"; then echo "undo failed"; exit 1; fi
+
+      - name: Build app bundle (universal)
+        run: ./scripts/make_app.sh
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Filipendula-macOS
+          path: build/Filipendula-*.zip
+          retention-days: 14
+
+      # Only reached if everything above passed: remember that this exact code built fine.
+      - name: Record successful build
+        run: echo "$GITHUB_SHA" > .ci-built-marker
+
+      - uses: actions/cache/save@v4
+        with:
+          path: .ci-built-marker
+          key: ${{ needs.check.outputs.key }}
