@@ -1,5 +1,9 @@
 # Filipendula
 
+[![build](https://github.com/njazz/Filipendula/actions/workflows/build.yml/badge.svg)](https://github.com/njazz/Filipendula/actions/workflows/build.yml)
+
+![image](screenshot.png)
+
 **Drop new versions of files onto a project and see, at a glance, which ones are safe to merge.**
 
 Filipendula is a small macOS app (plus a CLI) for reviewing and merging file updates, such as code you received from a colleague, a download, or an AI assistant. It compares each dropped file to its original in your project with a plain line diff and colors the result:

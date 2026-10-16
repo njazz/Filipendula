@@ -16,20 +16,29 @@ final class DateTests: XCTestCase {
         try "a\nb\n".write(to: source, atomically: true, encoding: .utf8)
 
         let now = Date()
-        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: target.path)
-        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-3 * 86_400)], ofItemAtPath: source.path)
+        
+        // NB: fixed
 
+        var values = URLResourceValues()
+        values.contentModificationDate = now.addingTimeInterval(-3 * 86400)
+
+        var url = source
+        try url.setResourceValues(values)
+        
         let planner = Planner(project: project)
         var c = planner.plan(sources: [source])[0]
         XCTAssertEqual(c.dateRelation, .sourceOlder)
         XCTAssertEqual(c.dateSummary, "source OLDER by 3 days")
 
-        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(2 * 3600)], ofItemAtPath: source.path)
+        values.contentModificationDate = now.addingTimeInterval(2 * 3600)
+
+        try url.setResourceValues(values)
+        
         c = planner.plan(sources: [source])[0]
         XCTAssertEqual(c.dateRelation, .sourceNewer)
         XCTAssertEqual(c.dateSummary, "source newer by 2 hours")
     }
-
+    
     func testNewFileHasNoRelation() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("filipendula-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
