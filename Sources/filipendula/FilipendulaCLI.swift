@@ -81,7 +81,7 @@ struct Apply: ParsableCommand {
     @Flag(name: .shortAndLong, help: "Don't ask for confirmation.") var yes = false
 
     @Flag(name: .customLong("add-new"),
-          help: "Also create files that don't exist in the project. Without this they are listed and skipped.")
+          help: "Also create files that don't exist in the project, at the location the planner suggests (see `plan`). Without this they are listed and skipped.")
     var addNew = false
 
     @Flag(name: .customLong("trash-sources"),
@@ -89,7 +89,7 @@ struct Apply: ParsableCommand {
     var trashSources = false
 
     @Flag(name: .customLong("accept-ambiguous"),
-          help: "Also apply files whose target was a best guess among several same-named files.")
+          help: "Also apply files whose target was a best guess among several same-named files, or whose lines barely match the target.")
     var acceptAmbiguous = false
 
     func run() throws {
@@ -106,7 +106,10 @@ struct Apply: ParsableCommand {
             if let issue = c.issue { skipped.append((c, issue)) }
             else if c.status == .new && !addNew { skipped.append((c, "not in the project, will not be added (use --add-new)")) }
             else if c.conflict { skipped.append((c, "duplicate target")) }
-            else if c.isAmbiguous && !acceptAmbiguous { skipped.append((c, "ambiguous target (use --accept-ambiguous)")) }
+            else if c.needsConfirmation && !acceptAmbiguous {
+                skipped.append((c, c.isAmbiguous ? "ambiguous target (use --accept-ambiguous)"
+                                                 : "weak match: few lines in common with the target (use --accept-ambiguous)"))
+            }
             else if !allowed.contains(c.status) { skipped.append((c, "not in --include")) }
             else { selected.append(c) }
         }

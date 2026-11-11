@@ -50,12 +50,23 @@ enum Render {
                 flags.append("\(Int((c.classification.lossRatio * 100).rounded()))% of original removed")
             }
             if let d = c.dateSummary, c.dateRelation != .same { flags.append(d) }
-            if c.status == .new { flags.append("not in project") }
-            if c.isAmbiguous { flags.append("ambiguous: \(c.candidates.count) candidates") }
+            if c.status == .new {
+                flags.append("not in project" + (c.suggestions.count > 1 ? "; \(c.suggestions.count) possible places" : ""))
+            }
+            if c.isAmbiguous {
+                let best = c.similarity.map { "; best fit \(Int(($0 * 100).rounded()))% similar" } ?? ""
+                flags.append("ambiguous: \(c.candidates.count) candidates\(best)")
+            } else if c.isLowSimilarity, let sim = c.similarity {
+                flags.append("only \(Int((sim * 100).rounded()))% of lines match: maybe a different file")
+            }
+            if let add = c.placements.first(where: { $0.reason == .addsInPlace }) {
+                flags.append("or add in place as \(add.relPath)")
+            }
             if c.conflict { flags.append("conflict: duplicate target") }
             if let issue = c.issue { flags.append(issue) }
             if !flags.isEmpty { line += style.paint("   (" + flags.joined(separator: "; ") + ")", "90") }
             print(line)
+            if let note = c.note, c.status != .identical { print(style.paint("      → " + note, "90")) }
         }
         let same = changes.filter { $0.status == .identical && $0.issue == nil }
         if !showAll && !same.isEmpty {

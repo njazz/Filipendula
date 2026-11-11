@@ -7,7 +7,7 @@ Bug reports and pull requests are welcome.
 macOS 13+, Xcode 15+ (Swift 5.9).
 
 ```bash
-swift test              # core logic: classifier, apply/undo, integrity, prune
+swift test              # core logic: classifier, matching, new-file placement, selection rules, apply/undo, integrity, prune
 ./run.sh                # build and launch a debug .app
 ```
 

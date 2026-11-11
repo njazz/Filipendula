@@ -23,8 +23,9 @@ Everything is algorithmic and local: no network, no AI, no telemetry. Every comm
 
 - Open a project folder, then drop files or whole folders anywhere on the window.
 - Colored tree with checkboxes, multi-selection, folder roll-ups and a diff pane with line numbers.
-- Matches dropped files by relative path, then by unique filename; ambiguous names get a best guess and a picker.
-- **Files that don't exist in the project are never added** (unless you turn that on), and the UI says so explicitly.
+- Matches dropped files by relative path, then by unique filename. When several project files share a name, each one is scored by **how many lines it has in common with the dropped file and how well its folder lines up with the source folder**; the best fit is selected and the picker shows every copy with its score.
+- Catches wrong matches: if a dropped folder points at `lib/a.swift` but hardly any lines match while `core/a.swift` is nearly the same file, the better file is suggested (and must be confirmed). A same-named file that shares almost no lines is flagged too.
+- **Files that don't exist in the project get a suggested location** (next to the files from the same folder that did match, in the folder the dropped structure points to, or in a folder named like the source folder). They are listed as "not in project" and are **never added unless you tick them** (one by one, with an *Add this file* switch and a location picker), or turn on *Check new files by default* in Setup.
 - Compares modification dates too ("source OLDER by 3 days" is a hint of a stale copy).
 - Commit = one batch: verified backups, atomic writes, journal. **Undo** restores from the backups, but only if they are intact and the file wasn't edited since.
 - Optional: move the dropped files to the Trash after a successful commit (with confirmation).
@@ -54,7 +55,13 @@ CLI: `swift build -c release --product filipendula && cp .build/release/filipend
 4. **Commit**. Yellow and red files ask for confirmation first.
 5. **Undo** any batch from the log at the bottom.
 
-Everything configurable is behind **Setup** (⌘,): thresholds, adding new files, Trash after commit, confirmations, diff context, backup maintenance.
+Everything configurable is behind **Setup** (⌘,): thresholds, whether new files start checked, Trash after commit, confirmations, diff context, backup maintenance.
+
+**Files that are not in the project (blue)** start unchecked. Select one to see where it could go (the picker lists the suggestions with the reason for each; you can also type a path), then tick it or flip *Add this file*. Committing creates it at that path and undo removes it again.
+
+**Same name, other folder.** If the source tree keeps a file in a different folder than the project does (project `Foo/Bar.hpp`, source `Foo/Baz/Bar.hpp`), the *Place* menu lets you replace `Foo/Bar.hpp` (the default) or add the file as `Foo/Baz/Bar.hpp`.
+
+**Same-named files.** When the filename matches more than one project file, the diff pane shows a *Replace* picker, for example `lib/util.swift · 92% similar · folder matches`. A target that was only a best guess, or that shares few lines with the dropped file, starts unchecked until you confirm it.
 
 ## How it decides
 
@@ -92,12 +99,12 @@ filipendula prune <project> [--older-than 30] [-y]
 filipendula gitignore <project>
 ```
 
-`plan` is a dry run and exits 2 if anything is red. `apply` defaults to green (and blue only with `--add-new`). The app and the CLI share one journal, so either can undo the other's batches.
+`plan` is a dry run and exits 2 if anything is red. It shows the suggested location of new files and why an ambiguous or weak match was chosen. `apply` defaults to green (and blue only with `--add-new`, which creates new files at the suggested location). `--accept-ambiguous` also applies guessed targets and weak matches. The app and the CLI share one journal, so either can undo the other's batches.
 
 ## Development
 
 ```bash
-swift test                 # classifier, apply/undo/integrity, new-file and Trash rules, prune
+swift test                 # classifier, matching, new-file placement, selection rules, apply/undo/integrity, journal, Trash, prune
 ./scripts/make_app.sh      # release bundle;  VERSION=1.2.0 and SIGN_ID=... are supported
 ```
 
@@ -119,6 +126,8 @@ The version lives in `Sources/MergeCore/Version.swift` (and `MARKETING_VERSION` 
 
 - One writer at a time per project (the journal is not locked).
 - Line-based diff: a moved block counts as a delete plus an add (yellow).
+- Similarity compares the *sets* of distinct lines, so it ignores order; it is a hint for choosing between same-named files, not a merge tool.
+- Suggested locations only know folders that already contain files; empty project folders are not seen.
 - Backups stay until pruned. Pruned batches can't be undone.
 
 ## License

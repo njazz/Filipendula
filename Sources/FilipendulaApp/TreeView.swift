@@ -130,7 +130,7 @@ struct TreePane: View {
         var parts = ["\(s.dropped) dropped", "\(s.review) to review"]
         if s.identical > 0 { parts.append("\(s.identical) identical (no diff)") }
         if s.notInProject > 0 {
-            parts.append("\(s.notInProject) not in project" + (model.settings.allowNewFiles ? "" : ", not added"))
+            parts.append("\(s.notInProject) not in project" + (model.settings.allowNewFiles ? "" : ", tick to add"))
         }
         if s.problems > 0 { parts.append("\(s.problems) with problems") }
         return parts.joined(separator: " · ")
@@ -213,14 +213,27 @@ struct TreeRowView: View {
 
     @ViewBuilder
     private func badges(for c: PlannedChange) -> some View {
-        if c.status == .new && !model.settings.allowNewFiles {
-            Text("not in project, not added")
-                .font(.caption2).foregroundStyle(.orange)
-                .help("This file does not exist in the project, so it will not be added. Change this in Setup.")
+        if c.status == .new {
+            if model.checked.contains(c.id) {
+                Text("new: will be added")
+                    .font(.caption2).foregroundStyle(.blue)
+                    .help("This file is not in the project. It will be created at \(c.targetRelPath) when you commit.")
+            } else {
+                Text("not in project, not added")
+                    .font(.caption2).foregroundStyle(.orange)
+                    .help("This file does not exist in the project, so it will not be added unless you tick it. The diff pane suggests where it could go.")
+            }
+        }
+        if let add = c.placements.first(where: { $0.reason == .addsInPlace }) {
+            Image(systemName: "arrow.triangle.branch").foregroundStyle(.blue)
+                .help("Same name as \(c.placements.first?.relPath ?? "a project file"), but the source tree has it in another folder. You can add it as \(add.relPath) instead.")
         }
         if c.isAmbiguous {
             Image(systemName: "questionmark.circle").foregroundStyle(.orange)
-                .help("Several project files share this name. Best guess selected; review the target.")
+                .help(c.note ?? "Several project files share this name. Best guess selected; review the target.")
+        } else if c.isLowSimilarity, let sim = c.similarity {
+            Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
+                .help("Only \(Int((sim * 100).rounded()))% of the lines match \(c.targetRelPath). It may be a different file with the same name; review before committing.")
         }
         if c.dateRelation == .sourceOlder {
             Image(systemName: "clock").foregroundStyle(.orange)
@@ -238,7 +251,7 @@ struct TreeRowView: View {
     private func stats(for c: PlannedChange) -> String {
         switch c.status {
         case .binary: return "binary"
-        case .new: return model.settings.allowNewFiles ? "+\(c.classification.added)" : "not added"
+        case .new: return model.checked.contains(c.id) ? "+\(c.classification.added)" : "not added"
         case .identical: return "no diff"
         default: return "+\(c.classification.added) −\(c.classification.removed)"
         }

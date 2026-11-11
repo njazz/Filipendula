@@ -31,18 +31,26 @@ public struct ProjectIndex: Sendable {
     public let files: [ProjectFile]
     public let byPath: [String: ProjectFile]
     public let byName: [String: [ProjectFile]]
+    /// Every folder that contains at least one indexed file, plus its parents ("a", "a/b"). The root is not listed.
+    public let directories: Set<String>
 
     public init(root: URL, files: [ProjectFile]) {
         self.root = root
         self.files = files
         var p: [String: ProjectFile] = [:]
         var n: [String: [ProjectFile]] = [:]
+        var d = Set<String>()
         for f in files {
             p[f.relPath] = f
             n[f.name, default: []].append(f)
+            var dir = RelPath.directory(of: f.relPath)
+            while !dir.isEmpty, d.insert(dir).inserted {
+                dir = RelPath.directory(of: dir)
+            }
         }
         self.byPath = p
         self.byName = n
+        self.directories = d
     }
 }
 

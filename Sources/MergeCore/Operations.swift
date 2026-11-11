@@ -72,9 +72,10 @@ public final class Operations {
     ///  4. write atomically, verify each written file, roll back everything on failure
     ///  5. journal `committed`
     ///
-    /// Files that have no original in the project are **never created** unless `allowNew` is true. They are
-    /// skipped and recorded in the batch notes ("Not in project, not added: …"). The check uses the project as it
-    /// is now, so a file whose original vanished after planning is skipped too.
+    /// Files that have no original in the project are **never created** unless `allowNew` is true or the change itself
+    /// carries `addNew` (the user ticked that one file). They are skipped and recorded in the batch notes
+    /// ("Not in project, not added: …"). The check uses the project as it is now, so a file whose original vanished
+    /// after planning is skipped too.
     @discardableResult
     public func apply(_ changes: [PlannedChange], allowNew: Bool = false, now: Date = Date()) throws -> JournalEntry {
         var items: [Item] = []
@@ -91,7 +92,10 @@ public final class Operations {
             var isDir: ObjCBool = false
             let existed = fm.fileExists(atPath: target.path, isDirectory: &isDir)
             if existed && isDir.boolValue { throw MergeError.invalidPath(rel) }
-            if !existed && !allowNew {
+            // A file with no original is created only if the whole batch allows it, or this very change was planned
+            // as a new file and explicitly asked for (`addNew`). A change planned against an existing file whose
+            // original vanished afterwards never qualifies.
+            if !existed && !(allowNew || (c.addNew && c.status == .new)) {
                 skippedNew.append(rel)
                 continue
             }

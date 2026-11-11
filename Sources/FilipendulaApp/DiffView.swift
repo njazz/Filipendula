@@ -74,35 +74,12 @@ struct DiffPane: View {
                 }
             }
 
+            placementControls(change)
+
             if change.status == .new {
-                if model.settings.allowNewFiles {
-                    HStack {
-                        Text("Create at").font(.caption).foregroundStyle(.secondary)
-                        TextField("path/in/project.ext", text: $destination)
-                            .textFieldStyle(.roundedBorder)
-                            .onSubmit { model.retarget(change.id, to: destination) }
-                    }
-                    .onAppear { destination = change.targetRelPath }
-                    .onChange(of: change.id) { _ in destination = change.targetRelPath }
-                } else {
-                    Label("This file does not exist in the project and will NOT be added. You can allow adding new files in Setup.",
-                          systemImage: "nosign")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.orange)
-                }
-            } else if change.isAmbiguous {
-                Picker("Target", selection: Binding(
-                    get: { change.targetRelPath },
-                    set: { model.retarget(change.id, to: $0) })
-                ) {
-                    ForEach(change.candidates, id: \.self) { Text($0).tag($0) }
-                }
-                .pickerStyle(.menu)
+                newFileControls(change)
             } else {
-                HStack(spacing: 6) {
-                    Text("Into").font(.caption).foregroundStyle(.secondary)
-                    Text(change.targetRelPath).font(.caption.weight(.medium))
-                }
+                targetControls(change)
             }
 
             if let issue = change.issue {
@@ -114,6 +91,125 @@ struct DiffPane: View {
             }
         }
         .padding(10)
+    }
+
+    // MARK: Target pickers
+
+    private func pct(_ x: Double) -> String { "\(Int((x * 100).rounded()))%" }
+
+    /// A file that exists nowhere in the project: say so, offer to add it, and suggest where it could go.
+    @ViewBuilder
+    private func newFileControls(_ change: PlannedChange) -> some View {
+        let added = model.checked.contains(change.id)
+        HStack(spacing: 8) {
+            Label(added ? "Not in the project. It WILL be created when you commit."
+                        : "Not in the project. It will NOT be added unless you switch this on.",
+                  systemImage: added ? "plus.circle.fill" : "nosign")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(added ? Color.blue : Color.orange)
+            Spacer()
+            Toggle("Add this file", isOn: Binding(
+                get: { model.checked.contains(change.id) },
+                set: { model.setChecked($0, fileID: change.id) }))
+                .toggleStyle(.switch)
+                .controlSize(.small)
+        }
+
+        if change.suggestions.count > 1 {
+            Picker("Suggested place", selection: Binding(
+                get: { change.targetRelPath },
+                set: { destination = $0; model.retarget(change.id, to: $0) })
+            ) {
+                ForEach(locationOptions(change)) { Text($0.label).tag($0.id) }
+            }
+            .pickerStyle(.menu)
+        }
+
+        HStack {
+            Text("Create at").font(.caption).foregroundStyle(.secondary)
+            TextField("path/in/project.ext", text: $destination)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { model.retarget(change.id, to: destination) }
+        }
+        .onAppear { destination = change.targetRelPath }
+        .onChange(of: change.id) { _ in destination = change.targetRelPath }
+        .onChange(of: change.targetRelPath) { destination = $0 }
+    }
+
+    /// Same name as a project file but in another folder of the source tree: replace that file, or add this one in place.
+    @ViewBuilder
+    private func placementControls(_ change: PlannedChange) -> some View {
+        if !change.placements.isEmpty {
+            Picker("Place", selection: Binding(
+                get: { change.targetRelPath },
+                set: { path in
+                    if let option = change.placements.first(where: { $0.relPath == path }) {
+                        model.choosePlacement(change.id, option)
+                    }
+                })
+            ) {
+                ForEach(change.placements, id: \.relPath) { option in
+                    Text((option.reason == .addsInPlace ? "Add  " : "Replace  ") + option.relPath + "  ·  " + option.summary)
+                        .tag(option.relPath)
+                }
+            }
+            .pickerStyle(.menu)
+        }
+    }
+
+    private struct LocationOption: Identifiable {
+        let id: String      // project path
+        let label: String
+    }
+
+    private func locationOptions(_ change: PlannedChange) -> [LocationOption] {
+        var options = change.suggestions.map { LocationOption(id: $0.relPath, label: "\($0.relPath)  ·  \($0.summary)") }
+        if !options.contains(where: { $0.id == change.targetRelPath }) {
+            options.insert(LocationOption(id: change.targetRelPath, label: "\(change.targetRelPath)  ·  your choice"), at: 0)
+        }
+        return options
+    }
+
+    /// An existing target: show it, how well it fits, and (when several files share the name) let the user pick.
+    @ViewBuilder
+    private func targetControls(_ change: PlannedChange) -> some View {
+        if change.candidates.count > 1 {
+            Picker("Replace", selection: Binding(
+                get: { change.targetRelPath },
+                set: { model.retarget(change.id, to: $0) })
+            ) {
+                ForEach(change.candidates, id: \.self) { path in
+                    Text(candidateLabel(change, path)).tag(path)
+                }
+            }
+            .pickerStyle(.menu)
+        } else {
+            HStack(spacing: 6) {
+                Text("Into").font(.caption).foregroundStyle(.secondary)
+                Text(change.targetRelPath).font(.caption.weight(.medium))
+                if let s = change.similarity, change.status != .identical {
+                    Text("\(pct(s)) of lines match").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+
+        if let note = change.note {
+            Label(note, systemImage: "questionmark.circle")
+                .font(.caption).foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if change.isLowSimilarity, let s = change.similarity {
+            Label("Only \(pct(s)) of the lines match \(change.targetRelPath). It may be a different file with the same name. Check the target before committing.",
+                  systemImage: "exclamationmark.circle")
+                .font(.caption).foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func candidateLabel(_ change: PlannedChange, _ path: String) -> String {
+        guard let s = change.candidateScores.first(where: { $0.path == path }) else { return path }
+        let folder = s.folderMatch > 0 ? "  ·  folder matches" : ""
+        return "\(path)  ·  \(pct(s.similarity)) similar\(folder)"
     }
 
     // MARK: Body

@@ -31,6 +31,7 @@ struct CommitSummary {
     var caution = 0
     var red = 0
     var trash = 0
+    var newFiles = 0
     var lines: [String] = []
     var needsConfirmation = false
 
@@ -47,7 +48,8 @@ struct AppSettings: Codable, Equatable {
     var lossThresholdPercent: Double = 40
     var ignoreTrailingWhitespace = true
     var showIdentical = false
-    /// Off by default: dropped files that don't exist in the project are listed but never added.
+    /// Off by default: dropped files that don't exist in the project start unchecked (they can still be ticked one by one).
+    /// On: they start checked, at the suggested location.
     var allowNewFiles = false
     /// Off by default: move merged source files to the Trash after a commit (always asks first).
     var trashSourcesAfterCommit = false
@@ -110,6 +112,8 @@ final class AppModel: ObservableObject {
     /// The file shown in the diff pane.
     @Published var focusedID: String?
     @Published var collapsedDirs: Set<String> = []
+    /// Targets the user picked by hand, remembered across re-plans (source id -> project path).
+    private var manualTargets: [String: String] = [:]
 
     @Published var settings: AppSettings {
         didSet { settingsChanged(from: oldValue) }
@@ -153,14 +157,14 @@ final class AppModel: ObservableObject {
 
     var focusedChange: PlannedChange? { focusedID.flatMap { changeIndex[$0] } }
 
-    /// Can this change be committed at all? New files only if adding them is allowed in Setup.
-    func isCommittable(_ c: PlannedChange) -> Bool {
-        c.status != .identical && c.issue == nil && (c.status != .new || settings.allowNewFiles)
-    }
+    /// The rules for what can be ticked and committed live in MergeCore (and are tested there).
+    var policy: SelectionPolicy { SelectionPolicy(checkNewFilesByDefault: settings.allowNewFiles) }
 
-    func defaultChecked(_ c: PlannedChange) -> Bool {
-        isCommittable(c) && c.status.selectedByDefault && !c.conflict && !c.isAmbiguous
-    }
+    /// Can this change be committed at all? New files can: ticking one is the explicit "add it" decision.
+    func isCommittable(_ c: PlannedChange) -> Bool { policy.isCommittable(c) }
+
+    /// New files start checked only if "Check new files by default" is on in Setup; files that need a second look never do.
+    func defaultChecked(_ c: PlannedChange) -> Bool { policy.defaultChecked(c) }
 
     var selectedChanges: [PlannedChange] {
         changes.filter { checked.contains($0.id) && isCommittable($0) }
@@ -184,10 +188,13 @@ final class AppModel: ObservableObject {
         s.caution = sel.filter { $0.status.isCaution }.count
         s.red = sel.filter { $0.status.isRed }.count
         s.trash = settings.trashSourcesAfterCommit ? Set(sel.map { $0.source.path }).count : 0
+        s.newFiles = sel.filter { $0.status == .new }.count
+        if s.newFiles > 0 { s.lines.append("\(s.newFiles) new file(s) will be created in the project") }
         if s.red > 0 { s.lines.append("\(s.red) red file(s): they add little, or lose a lot of the original") }
         if s.caution > 0 && settings.confirmYellow { s.lines.append("\(s.caution) yellow file(s): they remove some original code") }
         if s.trash > 0 { s.lines.append("\(s.trash) dropped file(s) will be moved to the Trash afterwards") }
         s.needsConfirmation = s.red > 0 || (s.caution > 0 && settings.confirmYellow) || s.trash > 0
+            || (s.newFiles > 0 && !settings.allowNewFiles)
         return s
     }
 
@@ -211,6 +218,7 @@ final class AppModel: ObservableObject {
         selection = []
         focusedID = nil
         collapsedDirs = []
+        manualTargets = [:]
         planner = nil
         activity = []
         log("Opened \(url.path)")
@@ -237,6 +245,7 @@ final class AppModel: ObservableObject {
 
     func clearPending() {
         sources = []
+        manualTargets = [:]
         changes = []
         checked = []
         selection = []
@@ -269,19 +278,26 @@ final class AppModel: ObservableObject {
         Task.detached(priority: .userInitiated) {
             let planner = Planner(project: project, options: options)
             let result = planner.plan(sources: existing)
-            await self.finishPlan(planner: planner, result: result, generation: generation)
+            await self.finishPlan(planner: planner, planned: result, generation: generation)
         }
     }
 
-    private func finishPlan(planner: Planner, result: [PlannedChange], generation: Int) {
+    private func finishPlan(planner: Planner, planned: [PlannedChange], generation: Int) {
         guard generation == planGeneration else { return }
         isWorking = false
         self.planner = planner
 
+        // Keep the targets the user picked by hand, as long as their source file is still in the list.
+        let liveIDs = Set(planned.map { $0.id })
+        manualTargets = manualTargets.filter { liveIDs.contains($0.key) }
+        let result = Planner.resolveConflicts(planned.map { c in
+            manualTargets[c.id].map { planner.retarget(c, to: $0) } ?? c
+        })
+
         let previous = changeIndex
         var newChecked = Set<String>()
         for c in result where isCommittable(c) {
-            if c.status == .additions && !c.isAmbiguous && !c.conflict {
+            if c.status == .additions && !c.needsConfirmation && !c.conflict {
                 newChecked.insert(c.id)                       // green is always (re)checked
             } else if let old = previous[c.id], old.status == c.status {
                 if checked.contains(c.id) { newChecked.insert(c.id) }
@@ -335,9 +351,9 @@ final class AppModel: ObservableObject {
         if !notInProject.isEmpty {
             let names = Self.nameList(notInProject)
             if settings.allowNewFiles {
-                log("\(notInProject.count) file(s) not in the project; they will be added if checked (\(names)).")
+                log("\(notInProject.count) file(s) not in the project, checked to be added at the suggested location (\(names)).")
             } else {
-                log("Not in the project, will NOT be added: \(names).", .warning)
+                log("Not in the project, NOT added unless you tick them: \(names). Suggested locations are in the diff pane.", .warning)
             }
         }
         for p in problems.prefix(5) {
@@ -353,10 +369,31 @@ final class AppModel: ObservableObject {
 
     func retarget(_ id: String, to rel: String) {
         guard let planner, let idx = changes.firstIndex(where: { $0.id == id }) else { return }
+        let before = changes[idx]
+        let wasChecked = checked.contains(id)
         var updated = changes
-        updated[idx] = planner.retarget(changes[idx], to: rel)
+        updated[idx] = planner.retarget(before, to: rel)
         changes = Planner.resolveConflicts(updated)
-        if defaultChecked(changes[idx]) { checked.insert(id) } else { checked.remove(id) }
+        manualTargets[id] = changes[idx].targetRelPath
+
+        let now = changes[idx]
+        if !isCommittable(now) {
+            checked.remove(id)
+        } else if before.status == .new && now.status == .new {
+            // Only the location changed: keep the user's decision to add (or not to add) the file.
+            if wasChecked { checked.insert(id) } else { checked.remove(id) }
+        } else if defaultChecked(now) {
+            checked.insert(id)
+        } else {
+            checked.remove(id)
+        }
+    }
+
+    /// The user chose between replacing the matched file and adding the source in place. Choosing "add" also ticks it:
+    /// picking a place for a new file is the explicit decision to create it.
+    func choosePlacement(_ id: String, _ option: LocationSuggestion) {
+        retarget(id, to: option.relPath)
+        if option.reason == .addsInPlace, let c = changeIndex[id], c.status == .new { checked.insert(id) }
     }
 
     // MARK: Settings reactions
@@ -376,8 +413,8 @@ final class AppModel: ObservableObject {
             }
             if !newIDs.isEmpty {
                 log(settings.allowNewFiles
-                    ? "Adding new files is ON: \(newIDs.count) file(s) not in the project can now be added."
-                    : "Adding new files is OFF: \(newIDs.count) file(s) not in the project will not be added.",
+                    ? "New files are checked by default: \(newIDs.count) file(s) not in the project will be added."
+                    : "New files are no longer checked by default: \(newIDs.count) file(s) not in the project will not be added unless you tick them.",
                     settings.allowNewFiles ? .info : .warning)
             }
         }
@@ -424,6 +461,12 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Checks or unchecks exactly one file (used by the diff pane's "add this file" switch).
+    func setChecked(_ on: Bool, fileID id: String) {
+        guard let c = changeIndex[id], isCommittable(c) else { return }
+        if on { checked.insert(id) } else { checked.remove(id) }
+    }
+
     private func expandRow(_ rowID: String) -> [String] {
         guard rowID.hasPrefix("dir:") else { return [rowID] }
         let prefix = String(rowID.dropFirst(4)) + "/"
@@ -431,7 +474,7 @@ final class AppModel: ObservableObject {
     }
 
     func selectAll() {
-        checked = Set(changes.filter { isCommittable($0) && !$0.conflict }.map { $0.id })
+        checked = Set(changes.filter { policy.includedInSelectAll($0) }.map { $0.id })
     }
 
     func deselectAll() {
@@ -442,16 +485,16 @@ final class AppModel: ObservableObject {
 
     func commit() {
         guard let project = projectURL else { return }
-        let selected = selectedChanges
+        // Ticking a new file is the explicit decision to create it; nothing else may be created.
+        let selected = policy.prepareForCommit(selectedChanges)
         guard !selected.isEmpty else { return }
         let options = self.options
-        let allowNew = settings.allowNewFiles
         let trash = settings.trashSourcesAfterCommit
         isWorking = true
         Task.detached(priority: .userInitiated) {
             do {
                 let ops = Operations(project: project, options: options)
-                let entry = try ops.apply(selected, allowNew: allowNew)
+                let entry = try ops.apply(selected)
                 let trashed = trash ? ops.trashSources(of: selected, entry: entry) : []
                 await self.finishCommit(entry, trashed: trashed)
             } catch {

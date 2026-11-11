@@ -26,8 +26,8 @@ struct SetupView: View {
                 }
 
                 Section("Files") {
-                    Toggle("Allow adding new files (not in the project)", isOn: $model.settings.allowNewFiles)
-                    Text("Off: dropped files that don't exist in the project are listed but never added. On: they can be checked and are created at the path you choose.")
+                    Toggle("Check new files by default (not in the project)", isOn: $model.settings.allowNewFiles)
+                    Text("Dropped files that don't exist in the project always get a suggested location, based on how the source and project folders match. Off: they start unchecked and are only added if you tick them. On: they start checked.")
                         .font(.caption).foregroundStyle(.secondary)
 
                     Toggle("Move dropped files to the Trash after a commit", isOn: $model.settings.trashSourcesAfterCommit)
